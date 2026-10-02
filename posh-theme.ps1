@@ -1,11 +1,11 @@
-﻿# oh-my-posh 主题切换（由两个 PowerShell profile 共同加载）
-#   theme              列出所有主题，* 标出当前主题
-#   theme <名字>        切换并记住，新开的终端也会沿用（支持 Tab 补全）
-#   theme -Random      随机换一个
-#   theme <名字> -Once  只在当前窗口试用，不保存
+﻿# oh-my-posh 主题切换（由两个 PowerShell profile 共同加载），用法见 theme -h
+# https://github.com/criscuolosubidu/posh-theme
 
 if (-not (Get-Command oh-my-posh -ErrorAction SilentlyContinue)) { return }
 
+$global:PoshThemeVersion = '1.1.0'
+$global:PoshThemeRepoRaw = 'https://raw.githubusercontent.com/criscuolosubidu/posh-theme/main'
+$global:PoshThemeScript = $PSCommandPath   # theme -Update 覆盖的就是这个文件
 $global:PoshThemeFile = Join-Path $HOME '.posh-theme'
 $global:PoshThemeDefault = 'M365Princess'
 $global:PoshThemes = @(
@@ -36,7 +36,8 @@ function global:Get-PoshThemeConfig([string]$Name) {
     if (Test-Path $override) { $override } else { $Name.ToLower() }
 }
 
-function theme {
+# global: 让 theme -Update 在函数里重新加载本文件时，新定义的 theme 仍然是全局的
+function global:theme {
     param(
         [Parameter(Position = 0)]
         [ArgumentCompleter({
@@ -45,8 +46,61 @@ function theme {
         })]
         [string]$Name,
         [switch]$Random,
-        [switch]$Once
+        [switch]$Once,
+        [switch]$Update,
+        [Alias('h')]
+        [switch]$Help
     )
+
+    if ($Help) {
+        Write-Host "theme - oh-my-posh 主题切换 v$global:PoshThemeVersion" -ForegroundColor Cyan
+        Write-Host @"
+
+用法：
+  theme                  列出所有主题，当前主题高亮显示
+  theme <名字>           切换并记住，新开的终端也会沿用（支持 Tab 补全）
+  theme <名字> -Once     只在当前窗口试用，不保存
+  theme -Random          随机换一个（可以加 -Once）
+  theme -Update          从 GitHub 升级 theme 命令本身
+  theme -h               显示这份说明
+
+文件：
+  ~/.posh-theme                     当前选择的主题
+  ~/.posh-themes/<名字>.omp.json    主题覆盖文件，存在时优先使用（用 extends 修补内置主题）
+
+主页：https://github.com/criscuolosubidu/posh-theme
+"@
+        return
+    }
+
+    if ($Update) {
+        $self = if ($global:PoshThemeScript) { $global:PoshThemeScript } else { Join-Path $HOME 'posh-theme.ps1' }
+        $tmp = "$self.download"
+        [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+        try {
+            Invoke-WebRequest "$global:PoshThemeRepoRaw/posh-theme.ps1" -OutFile $tmp -UseBasicParsing -ErrorAction Stop
+        } catch {
+            Write-Warning "下载失败：$_"
+            return
+        }
+        $errors = $null
+        [void][Management.Automation.Language.Parser]::ParseFile($tmp, [ref]$null, [ref]$errors)
+        if ($errors.Count -gt 0) {
+            Remove-Item $tmp
+            Write-Warning '下载的文件不完整或已损坏，未做修改'
+            return
+        }
+        if ((Get-FileHash $tmp).Hash -eq (Get-FileHash $self).Hash) {
+            Remove-Item $tmp
+            Write-Host "已经是最新版本 v$global:PoshThemeVersion" -ForegroundColor Green
+            return
+        }
+        $old = $global:PoshThemeVersion
+        Move-Item $tmp $self -Force
+        . $self
+        Write-Host "已升级：v$old -> v$global:PoshThemeVersion" -ForegroundColor Green
+        return
+    }
 
     if ($Random) {
         $Name = $global:PoshThemes | Where-Object { $_ -ne $global:PoshThemeCurrent } | Get-Random

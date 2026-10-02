@@ -36,9 +36,19 @@ theme                   # 列出全部主题，当前主题高亮显示
 theme atomic            # 切换并记住，新开的终端也会沿用（支持 Tab 补全）
 theme -Random           # 随机换一个
 theme dracula -Once     # 只在当前窗口试用，不保存
+theme -Update           # 从 GitHub 升级 theme 命令本身
+theme -h                # 查看说明
 ```
 
 当前主题保存在 `~/.posh-theme`，默认是 `M365Princess`。
+
+## 升级
+
+| 要升级的东西 | 命令 |
+|---|---|
+| `theme` 命令 | `theme -Update`（v1.1.0 之前装的没有这个参数，先重新运行一次安装命令） |
+| oh-my-posh | `oh-my-posh upgrade` |
+| 字体、profile、Terminal 设置 | 重新运行安装命令，已经装好的步骤会跳过 |
 
 ## 说明
 

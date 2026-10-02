@@ -76,6 +76,7 @@
             if ($json.profiles -is [array]) { $json.profiles = [pscustomobject]@{ list = $json.profiles } }
             if (-not $json.profiles.defaults) { $json.profiles | Add-Member defaults ([pscustomobject]@{}) -Force }
             $defaults = $json.profiles.defaults
+            if ($defaults.font.face -eq $face) { Write-Host "已经是 `"$face`"，跳过：$s"; return }
             if ($defaults.font) {
                 $defaults.font | Add-Member face $face -Force
             } else {
