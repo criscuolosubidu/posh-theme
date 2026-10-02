@@ -1,6 +1,7 @@
 ﻿# PowerShell 美化一键安装：oh-my-posh + JetBrainsMono Nerd Font + theme 切换命令
 #   本地运行：双击 install.cmd（会自动申请管理员权限）
-#   在线运行：在管理员 PowerShell 里执行 irm https://raw.githubusercontent.com/criscuolosubidu/posh-theme/main/install.ps1 | iex
+#   在线运行：在管理员 PowerShell 里执行 irm https://raw.githubusercontent.com/criscuolosubidu/posh-theme/main/web.ps1 | iex
+#   （别直接 irm 本文件 | iex：本文件带 BOM，iex 会把它当成命令报错，web.ps1 会先去掉 BOM）
 # 重复运行是安全的，已经装好的步骤会跳过。
 
 # 整体包在脚本块里，用 irm | iex 运行时变量不会留在当前会话

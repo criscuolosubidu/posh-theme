@@ -9,7 +9,7 @@ oh-my-posh 主题 + JetBrainsMono Nerd Font 字体 + 随时切换主题的 `them
 用**管理员身份**打开 PowerShell，执行：
 
 ```powershell
-irm https://raw.githubusercontent.com/criscuolosubidu/posh-theme/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/criscuolosubidu/posh-theme/main/web.ps1 | iex
 ```
 
 **方式二：离线安装**
