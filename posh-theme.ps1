@@ -3,7 +3,7 @@
 
 if (-not (Get-Command oh-my-posh -ErrorAction SilentlyContinue)) { return }
 
-$global:PoshThemeVersion = '1.1.0'
+$global:PoshThemeVersion = '1.1.1'
 $global:PoshThemeRepoRaw = 'https://raw.githubusercontent.com/criscuolosubidu/posh-theme/main'
 $global:PoshThemeScript = $PSCommandPath   # theme -Update 覆盖的就是这个文件
 $global:PoshThemeFile = Join-Path $HOME '.posh-theme'
@@ -90,7 +90,9 @@ function global:theme {
             Write-Warning '下载的文件不完整或已损坏，未做修改'
             return
         }
-        if ((Get-FileHash $tmp).Hash -eq (Get-FileHash $self).Hash) {
+        # 不用 Get-FileHash：从 pwsh 里启动的 Windows PowerShell 5 会继承错误的模块路径，找不到它
+        $same = [Convert]::ToBase64String([IO.File]::ReadAllBytes($tmp)) -eq [Convert]::ToBase64String([IO.File]::ReadAllBytes($self))
+        if ($same) {
             Remove-Item $tmp
             Write-Host "已经是最新版本 v$global:PoshThemeVersion" -ForegroundColor Green
             return
