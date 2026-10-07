@@ -3,11 +3,16 @@
 
 if (-not (Get-Command oh-my-posh -ErrorAction SilentlyContinue)) { return }
 
-$global:PoshThemeVersion = '1.1.1'
+$global:PoshThemeVersion = '1.2.0'
 $global:PoshThemeRepoRaw = 'https://raw.githubusercontent.com/criscuolosubidu/posh-theme/main'
 $global:PoshThemeScript = $PSCommandPath   # theme -Update 覆盖的就是这个文件
 $global:PoshThemeFile = Join-Path $HOME '.posh-theme'
 $global:PoshThemeDefault = 'M365Princess'
+# 命令运行超过 BusyDelayMs 毫秒后，标签页变成 BusyColor 并显示转圈动画；这样的命令失败时标签页变成 ErrorColor，
+# 直到下一条命令开始。可以在 profile 里覆盖，颜色设为 '' 则不变色
+if ($null -eq $global:PoshThemeBusyColor) { $global:PoshThemeBusyColor = '#F3AE35' }
+if ($null -eq $global:PoshThemeErrorColor) { $global:PoshThemeErrorColor = '#D81E5B' }
+if ($null -eq $global:PoshThemeBusyDelayMs) { $global:PoshThemeBusyDelayMs = 1000 }
 $global:PoshThemes = @(
     '1_shell', 'M365Princess', 'agnoster.minimal', 'agnoster', 'agnosterplus', 'aliens', 'amro',
     'atomic', 'atomicBit', 'avit', 'blue-owl', 'blueish', 'bubbles', 'bubblesextra', 'bubblesline',
@@ -34,6 +39,133 @@ $global:PoshThemes = @(
 function global:Get-PoshThemeConfig([string]$Name) {
     $override = Join-Path $HOME ".posh-themes\$($Name.ToLower()).omp.json"
     if (Test-Path $override) { $override } else { $Name.ToLower() }
+}
+
+# ---------- 标签页：标题显示路径；命令运行较久时标签页变色、转圈 ----------
+# Windows Terminal 控制序列：OSC 9;4;3 / 9;4;0 显示 / 清除标签页转圈，
+# OSC 4;264 / OSC 104;264 设置 / 恢复标签页颜色（Windows Terminal 1.15+）。
+# 不用 OSC 9;4;2 表示失败：实测 Windows Terminal 1.24 的标签页上它只是个蓝色圆环，看不出是错误
+
+# '#F3AE35' -> OSC 4;264 设置标签页颜色的序列，格式不对返回空字符串
+function global:Get-PoshThemeTabColorVT([string]$Color) {
+    if ($Color -match '^#?([0-9a-fA-F]{2})([0-9a-fA-F]{2})([0-9a-fA-F]{2})$') {
+        "$([char]27)]4;264;rgb:$($Matches[1])/$($Matches[2])/$($Matches[3])$([char]7)"
+    } else { '' }
+}
+
+function global:Get-PoshThemeTabPath {
+    $loc = Get-Location
+    $p = if ($loc.Provider.Name -eq 'FileSystem') { $loc.ProviderPath } else { $loc.Path }
+    if ($p -eq $HOME -or $p.StartsWith("$HOME\", [StringComparison]::OrdinalIgnoreCase)) { $p = '~' + $p.Substring($HOME.Length) }
+    $parts = $p.TrimEnd('\') -split '\\'
+    if ($parts.Count -gt 3) { $p = '…\' + ($parts[-2..-1] -join '\') }
+    $p
+}
+
+function global:Write-PoshThemeVT([string]$Sequence) {
+    # 只在 Windows Terminal 里发，别的终端可能不认识
+    if ($env:WT_SESSION -and $Sequence) { [Console]::Out.Write($Sequence); [Console]::Out.Flush() }
+}
+
+# 后台线程：命令开始后等 BusyDelayMs，命令还没结束才变色、转圈，避免 ls、cd 这类瞬间命令让标签页闪烁
+function global:Get-PoshThemeBusyState {
+    if (-not $global:PoshThemeBusyState) {
+        $state = [hashtable]::Synchronized(@{
+            Lock = New-Object object; Signal = New-Object System.Threading.AutoResetEvent $false
+            Seq = 0; Running = $false; Shown = $false; Title = ''; Sequence = ''; DelayMs = 1000
+        })
+        $ps = [PowerShell]::Create()
+        [void]$ps.AddScript({
+            param($state)
+            while ($true) {
+                [void]$state.Signal.WaitOne()
+                if ($state.Quit) { return }
+                $seq = $state.Seq
+                [System.Threading.Thread]::Sleep($state.DelayMs)
+                [System.Threading.Monitor]::Enter($state.Lock)
+                try {
+                    if ($state.Running -and $state.Seq -eq $seq) {
+                        $state.Shown = $true
+                        [Console]::Title = $state.Title
+                        if ($state.Sequence) { [Console]::Out.Write($state.Sequence); [Console]::Out.Flush() }
+                    }
+                } finally { [System.Threading.Monitor]::Exit($state.Lock) }
+            }
+        }).AddArgument($state)
+        [void]$ps.BeginInvoke()
+        # 退出时 PowerShell 会等这个后台脚本结束，而它卡在 WaitOne 上打断不了，必须先通知它返回，否则 exit 会卡死
+        $null = Register-EngineEvent -SourceIdentifier PowerShell.Exiting -Action {
+            $global:PoshThemeBusyState.Quit = $true
+            [void]$global:PoshThemeBusyState.Signal.Set()
+        }
+        $global:PoshThemeBusyState = $state
+    }
+    $global:PoshThemeBusyState
+}
+
+# 命令开始执行（PSReadLine 接受输入行时调用）
+function global:Invoke-PoshThemePreexec([string]$Line) {
+    $esc = [char]27; $bel = [char]7
+    if ($global:PoshThemeErrorShown) { Write-PoshThemeVT "$esc]104;264$bel"; $global:PoshThemeErrorShown = $false }
+    $cmd = ($Line -split "`r?`n")[0].Trim()
+    if ($cmd -match '^exit\b') { return }   # 退出本身可能超过 1 秒，别在关闭前闪一下
+    if ($cmd.Length -gt 30) { $cmd = $cmd.Substring(0, 29) + '…' }
+    $sequence = if ($env:WT_SESSION) { "$esc]9;4;3$bel" + (Get-PoshThemeTabColorVT $global:PoshThemeBusyColor) } else { '' }
+    $state = Get-PoshThemeBusyState
+    [System.Threading.Monitor]::Enter($state.Lock)
+    try {
+        $state.Seq++
+        $state.Running = $true
+        $state.Shown = $false
+        $state.Title = "$cmd · $(Get-PoshThemeTabPath)"
+        $state.Sequence = $sequence
+        $state.DelayMs = [int]$global:PoshThemeBusyDelayMs
+    } finally { [System.Threading.Monitor]::Exit($state.Lock) }
+    [void]$state.Signal.Set()
+}
+
+# 显示提示符之前（命令结束后）调用，由注入 oh-my-posh 的 Set-PoshContext 触发
+function global:Invoke-PoshThemePrompt($ErrorCode) {
+    $esc = [char]27; $bel = [char]7
+    $state = $global:PoshThemeBusyState
+    if ($state) {
+        [System.Threading.Monitor]::Enter($state.Lock)
+        try {
+            $shown = $state.Shown
+            $state.Running = $false
+            $state.Shown = $false
+        } finally { [System.Threading.Monitor]::Exit($state.Lock) }
+        if ($shown) {
+            # 运行较久的命令失败时，标签页保持 ErrorColor，下次执行命令时恢复
+            $errorVT = if ($ErrorCode) { Get-PoshThemeTabColorVT $global:PoshThemeErrorColor } else { '' }
+            if ($errorVT) {
+                Write-PoshThemeVT "$esc]9;4;0$bel$errorVT"
+                $global:PoshThemeErrorShown = $true
+            } else {
+                Write-PoshThemeVT "$esc]9;4;0$bel$esc]104;264$bel"
+            }
+        }
+    }
+    $Host.UI.RawUI.WindowTitle = Get-PoshThemeTabPath
+}
+
+# 加载主题并挂上钩子。oh-my-posh 在模块内部调用自己的 Set-PoshContext，在全局定义同名函数不会被调用，
+# 所以要注入到模块里；每次 init 都会重建模块，因此每次加载主题后都要重新注入
+function global:Initialize-PoshTheme([string]$Name) {
+    oh-my-posh init pwsh --config (Get-PoshThemeConfig $Name) | Invoke-Expression
+    $omp = Get-Module oh-my-posh-core
+    if ($omp) { & $omp { function script:Set-PoshContext { Invoke-PoshThemePrompt $script:ErrorCode } } }
+
+    # 不占用回车键（oh-my-posh 的瞬时提示符要用），改用 PSReadLine 的历史记录回调感知命令开始
+    if (-not $global:PoshThemeHistoryHooked -and (Get-Command Set-PSReadLineOption -ErrorAction SilentlyContinue)) {
+        $global:PoshThemeOrigHistoryHandler = (Get-PSReadLineOption).AddToHistoryHandler
+        Set-PSReadLineOption -AddToHistoryHandler {
+            param([string]$line)
+            try { Invoke-PoshThemePreexec $line } catch { }
+            if ($global:PoshThemeOrigHistoryHandler) { $global:PoshThemeOrigHistoryHandler.Invoke($line) } else { $true }
+        }
+        $global:PoshThemeHistoryHooked = $true
+    }
 }
 
 # global: 让 theme -Update 在函数里重新加载本文件时，新定义的 theme 仍然是全局的
@@ -67,6 +199,14 @@ function global:theme {
 文件：
   ~/.posh-theme                     当前选择的主题
   ~/.posh-themes/<名字>.omp.json    主题覆盖文件，存在时优先使用（用 extends 修补内置主题）
+
+标签页（Windows Terminal）：
+  标题显示当前路径（部分主题自带标题设置，以主题为准）
+  命令运行超过 1 秒时，标签页变色并显示转圈动画；这样的命令失败时标签页变红，直到下一条命令开始
+  可以在 profile 里修改：
+    `$PoshThemeBusyColor = '#4B95E9'    运行中的标签页颜色，设为 '' 则不变色
+    `$PoshThemeErrorColor = ''          失败后的标签页颜色，设为 '' 则不变色
+    `$PoshThemeBusyDelayMs = 500        运行多久之后才显示
 
 主页：https://github.com/criscuolosubidu/posh-theme
 "@
@@ -132,7 +272,7 @@ function global:theme {
     }
     $Name = $global:PoshThemes | Where-Object { $_ -eq $Name } | Select-Object -First 1
 
-    oh-my-posh init pwsh --config (Get-PoshThemeConfig $Name) | Invoke-Expression
+    Initialize-PoshTheme $Name
     $global:PoshThemeCurrent = $Name
     if ($Once) {
         Write-Host "当前窗口临时使用 $Name" -ForegroundColor Yellow
@@ -144,4 +284,4 @@ function global:theme {
 
 $global:PoshThemeCurrent = if (Test-Path $global:PoshThemeFile) { (Get-Content $global:PoshThemeFile -Raw).Trim() }
 if ($global:PoshThemeCurrent -notin $global:PoshThemes) { $global:PoshThemeCurrent = $global:PoshThemeDefault }
-oh-my-posh init pwsh --config (Get-PoshThemeConfig $global:PoshThemeCurrent) | Invoke-Expression
+Initialize-PoshTheme $global:PoshThemeCurrent
