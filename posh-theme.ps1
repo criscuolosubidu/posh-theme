@@ -3,15 +3,21 @@
 
 if (-not (Get-Command oh-my-posh -ErrorAction SilentlyContinue)) { return }
 
-$global:PoshThemeVersion = '1.2.0'
+$global:PoshThemeVersion = '1.3.0'
 $global:PoshThemeRepoRaw = 'https://raw.githubusercontent.com/criscuolosubidu/posh-theme/main'
 $global:PoshThemeScript = $PSCommandPath   # theme -Update 覆盖的就是这个文件
 $global:PoshThemeFile = Join-Path $HOME '.posh-theme'
 $global:PoshThemeDefault = 'M365Princess'
 # 命令运行超过 BusyDelayMs 毫秒后，标签页变成 BusyColor 并显示转圈动画；这样的命令失败时标签页变成 ErrorColor，
-# 直到下一条命令开始。可以在 profile 里覆盖，颜色设为 '' 则不变色
+# 直到下一条命令开始；ssh 登录远程时标签页变成 RemoteColor。可以在 profile 里覆盖，颜色设为 '' 则不变色
 if ($null -eq $global:PoshThemeBusyColor) { $global:PoshThemeBusyColor = '#F3AE35' }
 if ($null -eq $global:PoshThemeErrorColor) { $global:PoshThemeErrorColor = '#D81E5B' }
+if ($null -eq $global:PoshThemeRemoteColor) { $global:PoshThemeRemoteColor = '#4B95E9' }
+# 自己管理标签页（标题、转圈）或者只是在等你操作的交互式程序：运行时不转圈、不改标题、不变色，退出码也不算失败
+if ($null -eq $global:PoshThemeInteractiveApps) {
+    $global:PoshThemeInteractiveApps = @('claude', 'codex', 'gemini', 'opencode', 'aider', 'copilot',
+        'vim', 'nvim', 'vi', 'hx', 'nano', 'less', 'htop', 'btop', 'lazygit')
+}
 if ($null -eq $global:PoshThemeBusyDelayMs) { $global:PoshThemeBusyDelayMs = 1000 }
 $global:PoshThemes = @(
     '1_shell', 'M365Princess', 'agnoster.minimal', 'agnoster', 'agnosterplus', 'aliens', 'amro',
@@ -103,12 +109,46 @@ function global:Get-PoshThemeBusyState {
     $global:PoshThemeBusyState
 }
 
+# 'claude --resume' -> 'claude'；'& "C:\Program Files\Neovim\bin\nvim.exe" a.md' -> 'nvim'
+function global:Get-PoshThemeCommandName([string]$CommandLine) {
+    if ($CommandLine -match '^\s*(?:[&.]\s+)?(?:"([^"]+)"|''([^'']+)''|(\S+))') {
+        $first = @($Matches[1], $Matches[2], $Matches[3] | Where-Object { $_ })[0]
+        ($first -replace '^.*[\\/]', '') -replace '\.(exe|cmd|bat|ps1)$', ''
+    }
+}
+
+# 'ssh -p 2222 -i key me@host ls' -> 'me@host'；不是 ssh 命令返回 $null
+function global:Get-PoshThemeSshTarget([string]$CommandLine) {
+    $tokens = @($CommandLine.Trim() -split '\s+')
+    if ($tokens.Count -lt 2 -or ($tokens[0] -replace '^.*[\\/]', '') -notmatch '^ssh(\.exe)?$') { return $null }
+    for ($i = 1; $i -lt $tokens.Count; $i++) {
+        $t = $tokens[$i]
+        if ($t -cmatch '^-[BbcDEeFIiJLlmOoPpRSWw]$') { $i++; continue }   # 这些选项带参数，连参数一起跳过
+        if ($t.StartsWith('-')) { continue }
+        return $t -replace '^ssh://', ''
+    }
+    $null
+}
+
 # 命令开始执行（PSReadLine 接受输入行时调用）
 function global:Invoke-PoshThemePreexec([string]$Line) {
     $esc = [char]27; $bel = [char]7
     if ($global:PoshThemeErrorShown) { Write-PoshThemeVT "$esc]104;264$bel"; $global:PoshThemeErrorShown = $false }
     $cmd = ($Line -split "`r?`n")[0].Trim()
     if ($cmd -match '^exit\b') { return }   # 退出本身可能超过 1 秒，别在关闭前闪一下
+    $remote = Get-PoshThemeSshTarget $cmd
+    if ($remote) {
+        # ssh 登录远程不是本机在忙：不转圈，立即换成 RemoteColor；标题之后可能被远程 shell 改掉，以远程的为准
+        $Host.UI.RawUI.WindowTitle = "ssh: $remote"
+        Write-PoshThemeVT (Get-PoshThemeTabColorVT $global:PoshThemeRemoteColor)
+        $global:PoshThemeRemoteShown = $true
+        return
+    }
+    if ((Get-PoshThemeCommandName $cmd) -in $global:PoshThemeInteractiveApps) {
+        # Claude Code、Codex 等会自己设置标题、自己发转圈信号（工作时转、等输入时停），这里不插手，免得盖掉它们的状态
+        $global:PoshThemeInteractiveShown = $true
+        return
+    }
     if ($cmd.Length -gt 30) { $cmd = $cmd.Substring(0, 29) + '…' }
     $sequence = if ($env:WT_SESSION) { "$esc]9;4;3$bel" + (Get-PoshThemeTabColorVT $global:PoshThemeBusyColor) } else { '' }
     $state = Get-PoshThemeBusyState
@@ -127,6 +167,21 @@ function global:Invoke-PoshThemePreexec([string]$Line) {
 # 显示提示符之前（命令结束后）调用，由注入 oh-my-posh 的 Set-PoshContext 触发
 function global:Invoke-PoshThemePrompt($ErrorCode) {
     $esc = [char]27; $bel = [char]7
+    if ($global:PoshThemeRemoteShown) {
+        $global:PoshThemeRemoteShown = $false
+        # ssh 的退出码一般是远程最后一条命令的，只有 255 才是 ssh 自己出错（连不上、断线）
+        $errorVT = if ($ErrorCode -eq 255) { Get-PoshThemeTabColorVT $global:PoshThemeErrorColor } else { '' }
+        if ($errorVT) {
+            Write-PoshThemeVT $errorVT
+            $global:PoshThemeErrorShown = $true
+        } else {
+            Write-PoshThemeVT "$esc]104;264$bel"
+        }
+    }
+    if ($global:PoshThemeInteractiveShown) {
+        $global:PoshThemeInteractiveShown = $false
+        Write-PoshThemeVT "$esc]9;4;0$bel"   # 程序被强行关掉时可能留下它自己的转圈
+    }
     $state = $global:PoshThemeBusyState
     if ($state) {
         [System.Threading.Monitor]::Enter($state.Lock)
@@ -203,9 +258,13 @@ function global:theme {
 标签页（Windows Terminal）：
   标题显示当前路径（部分主题自带标题设置，以主题为准）
   命令运行超过 1 秒时，标签页变色并显示转圈动画；这样的命令失败时标签页变红，直到下一条命令开始
+  ssh 登录远程时标签页变蓝、不转圈，标题显示 ssh: 主机；ssh 出错退出（退出码 255）时变红
+  Claude Code、Codex、vim 等交互式程序运行时不插手，标签页交给它们自己管理
   可以在 profile 里修改：
     `$PoshThemeBusyColor = '#4B95E9'    运行中的标签页颜色，设为 '' 则不变色
     `$PoshThemeErrorColor = ''          失败后的标签页颜色，设为 '' 则不变色
+    `$PoshThemeRemoteColor = '#59C9A5'  ssh 远程会话的标签页颜色，设为 '' 则不变色
+    `$PoshThemeInteractiveApps += 'k9s'  加入不需要转圈的交互式程序（按命令名匹配）
     `$PoshThemeBusyDelayMs = 500        运行多久之后才显示
 
 主页：https://github.com/criscuolosubidu/posh-theme

@@ -47,13 +47,29 @@ theme -h                # 查看说明
 - **标题显示当前路径**，开多个 pwsh 时一眼就能分清。部分主题自带标题设置，空闲时以主题为准。
 - **命令运行超过 1 秒**：标签页变成琥珀色并显示转圈动画，标题显示正在运行的命令。`ls`、`cd` 这类瞬间完成的命令不会让标签页闪烁。
 - **运行较久的命令失败**：标签页变红，直到下一条命令开始。
+- **ssh 登录远程**：标签页立即变蓝、不转圈，标题显示 `ssh: 主机`（远程 shell 自己设置标题时以远程为准）。退出后恢复；只有 ssh 自己出错（退出码 255，比如连不上、断线）才变红，远程最后一条命令失败不算。
+
+- **Claude Code、Codex、vim 等交互式程序**：运行时不转圈、不改标题、不变色，标签页交给程序自己管理（Claude Code 会自己设置标题、工作时自己转圈）。退出后清掉它可能残留的转圈，退出码不算失败。
+
+| 颜色 | 含义 |
+|---|---|
+| 琥珀色 + 转圈 | 本机命令运行中 |
+| 蓝色 | ssh 远程会话 |
+| 红色 | 运行较久的命令失败 / ssh 连接出错 |
 
 可以在 profile 里修改（写在加载 `posh-theme.ps1` 那一行的前面或后面都行）：
 
 ```powershell
 $PoshThemeBusyColor   = '#4B95E9'   # 运行中的颜色，'' 表示不变色
 $PoshThemeErrorColor  = ''          # 失败后的颜色，'' 表示不变色
+$PoshThemeRemoteColor = '#59C9A5'   # ssh 远程会话的颜色，'' 表示不变色
 $PoshThemeBusyDelayMs = 500         # 运行多久之后才显示
+```
+
+交互式程序名单默认是 `claude codex gemini opencode aider copilot vim nvim vi hx nano less htop btop lazygit`，按命令名匹配。要追加的话写在加载 `posh-theme.ps1` 那一行**之后**：
+
+```powershell
+$PoshThemeInteractiveApps += 'k9s'
 ```
 
 ## 升级
